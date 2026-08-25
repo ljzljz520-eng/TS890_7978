@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "metrics": {
+    "production_loc": 3167,
+    "production_files": 19,
+    "production_packages": 10,
+    "test_files": 10,
+    "production_functions": 139,
+    "decision_points": 297
+  },
+  "persistence": {
+    "module": "go.etcd.io/bbolt",
+    "entities": [
+      "ClipAsset",
+      "GradeSession",
+      "PreviewFrame",
+      "AuditEvent"
+    ],
+    "reopen_test": "TestPersistenceSurvivesReopen"
+  },
+  "workflows": [
+    {
+      "steps": [
+        "validate deterministic upload metadata",
+        "persist clip, grade, and audit event atomically",
+        "query the ready clip summary",
+        "expose the clip through the editing entrypoint"
+      ],
+      "test": "TestUploadAndPrepareWorkflow"
+    },
+    {
+      "steps": [
+        "load active temporary clip",
+        "apply an indoor, outdoor, or night preset",
+        "plan bounded timestamps and ffmpeg commands",
+        "persist refreshed preview frames and activity"
+      ],
+      "test": "TestPreviewRefreshWorkflow"
+    },
+    {
+      "steps": [
+        "read the current grade revision for two editors",
+        "apply independent exposure and saturation patches",
+        "persist both competing updates",
+        "verify merged values or explicit conflict behavior"
+      ],
+      "test": "TestBusinessChain45"
+    },
+    {
+      "steps": [
+        "scan clips in deterministic expiry order",
+        "mark expired temporary media",
+        "delete media and related preview frames",
+        "report retained changed and failed work"
+      ],
+      "test": "TestRunnerExpiresAndDeletes"
+    }
+  ]
+}
