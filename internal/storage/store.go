@@ -157,6 +157,43 @@ func (s *Store) SaveGradeIfRevision(grade domain.GradeSession, expected uint64) 
 	})
 }
 
+// UpdateGradeAtomic runs merge against the freshest grade for clipID inside a
+// single read-write transaction. Because the read, the patch, and the write all
+// share one transaction, a competing update cannot land between them: the merge
+// always sees the latest committed revision and the write is conditional on
+// that same revision. This is record isolation for grade updates — concurrent
+// patches to distinct fields merge instead of one silently clobbering the other.
+func (s *Store) UpdateGradeAtomic(clipID string, merge func(current domain.GradeSession) (domain.GradeSession, error)) (domain.GradeSession, error) {
+	if merge == nil {
+		return domain.GradeSession{}, errors.New("merge function is required")
+	}
+	var updated domain.GradeSession
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(gradesBucket)
+		var current domain.GradeSession
+		if err := decode(bucket.Get([]byte(clipID)), &current); err != nil {
+			return err
+		}
+		merged, err := merge(current)
+		if err != nil {
+			return err
+		}
+		if err := merged.Validate(); err != nil {
+			return err
+		}
+		data, err := encode(merged)
+		if err != nil {
+			return err
+		}
+		if err := bucket.Put([]byte(clipID), data); err != nil {
+			return err
+		}
+		updated = merged
+		return nil
+	})
+	return updated, err
+}
+
 func previewKey(frame domain.PreviewFrame) []byte {
 	return []byte(fmt.Sprintf("%s/%010d/%s", frame.ClipID, frame.Sequence, frame.ID))
 }

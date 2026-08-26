@@ -82,16 +82,19 @@ func (s *Service) ApplyPreset(clipID string, name domain.PresetName, actor strin
 	if !clip.AvailableAt(s.clock.Now()) {
 		return domain.GradeSession{}, domain.ErrExpired
 	}
-	current, err := s.store.Grade(clipID)
-	if err != nil {
-		return domain.GradeSession{}, err
-	}
 	patch, err := grading.PatchForPreset(name)
 	if err != nil {
 		return domain.GradeSession{}, err
 	}
-	updated := current.Apply(patch, s.clock.Now())
-	if err := s.store.SaveGrade(updated); err != nil {
+	now := s.clock.Now()
+	// Merge inside the storage transaction so the preset is applied to the
+	// latest committed grade rather than a stale snapshot captured before
+	// the read. Without record isolation a concurrent update can land between
+	// the read and the write and be silently overwritten by this preset.
+	updated, err := s.store.UpdateGradeAtomic(clipID, func(current domain.GradeSession) (domain.GradeSession, error) {
+		return current.Apply(patch, now), nil
+	})
+	if err != nil {
 		return domain.GradeSession{}, err
 	}
 	if err := s.store.SaveEvent(s.event("grade.preset", clipID, actor, "应用场景预设 "+string(name), updated.Revision)); err != nil {
@@ -108,22 +111,28 @@ func (s *Service) UpdateGrade(clipID string, patch domain.GradePatch, actor stri
 	if !clip.AvailableAt(s.clock.Now()) {
 		return domain.GradeSession{}, domain.ErrExpired
 	}
-	current, err := s.store.Grade(clipID)
+	now := s.clock.Now()
+	if s.hook != nil {
+		s.hook("read")
+	}
+	// Merge against the freshest grade inside one storage transaction. The
+	// read-modify-write must be atomic so a concurrent update cannot land
+	// between the snapshot read and the unconditional SaveGrade write, which
+	// would let the later writer silently overwrite the earlier change.
+	// Because GradePatch uses per-field pointers, distinct fields merge while
+	// revision stays monotonically increasing — no silent data loss.
+	updated, err := s.store.UpdateGradeAtomic(clipID, func(current domain.GradeSession) (domain.GradeSession, error) {
+		applied := current.Apply(patch, now)
+		if err := applied.Validate(); err != nil {
+			return domain.GradeSession{}, err
+		}
+		return applied, nil
+	})
 	if err != nil {
 		return domain.GradeSession{}, err
 	}
 	if s.hook != nil {
-		s.hook("read")
-	}
-	updated := current.Apply(patch, s.clock.Now())
-	if err := updated.Validate(); err != nil {
-		return domain.GradeSession{}, err
-	}
-	if s.hook != nil {
 		s.hook("write")
-	}
-	if err := s.store.SaveGrade(updated); err != nil {
-		return domain.GradeSession{}, err
 	}
 	if err := s.store.SaveEvent(s.event("grade.updated", clipID, actor, "更新调色微调参数", updated.Revision)); err != nil {
 		return domain.GradeSession{}, err
